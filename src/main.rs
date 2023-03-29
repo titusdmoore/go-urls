@@ -110,9 +110,12 @@ async fn create_link((ds, ses): &DB, key: &str, url: &str) -> Result<(), ()> {
 async fn find_link_by_key((ds, ses): &DB, key: &str) -> Result<Object, ()> {
     let sql = "SELECT * FROM link WHERE key = $key";
     let vars: BTreeMap<String, Value> = [("key".into(), key.into())].into();
+    let vars2: BTreeMap<String, Value> = [("key".into(), key.into())].into();
 
     let ress = ds.execute(sql, ses, Some(vars), false).await.unwrap();
+    let ress2 = ds.execute(sql, ses, Some(vars2), false).await.unwrap();
     let somethign = into_surreal_object(ress);
+    let something2 = into_surreal_object2(ress2);
     tracing::debug!("Found link 1: {:?}", &somethign);
     if let Ok(res) = somethign {
         tracing::debug!("Found link: {:?}", res);
@@ -140,13 +143,22 @@ fn into_iter_objects(
 }
 
 fn into_surreal_object(ress: Vec<SurrealResponse>) -> AnyhowResult<Object> {
-    let res_iter = into_iter_objects(&ress)?;
     let res = ress.into_iter().next().map(|rp| rp.result).transpose()?;
-    tracing::debug!("Found link 2: {:?}", res_iter.count());
+    // let res_iter = into_iter_objects(ress)?;
+    // tracing::debug!("Found link 2: {:?}", res_iter.count());
     match res {
         Some(Value::Object(object)) => Ok(object),
         _ => Err(anyhow!("No records found.")),
     }
+}
+
+fn into_surreal_object2(ress: Vec<SurrealResponse>) -> AnyhowResult<Object> {
+    let res_iter = into_iter_objects(ress).unwrap();
+
+    res_iter.for_each(|obj_res| {
+        return obj_res;
+    });
+    
 }
 
 #[derive(Serialize, Deserialize)]
