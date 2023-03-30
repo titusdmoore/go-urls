@@ -11,9 +11,10 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::{collections::BTreeMap, sync::Arc};
 use surrealdb::{
-    sql::{Array, Object, Value},
-    Datastore, Error, Response as SurrealResponse, Session,
+    sql::{Object, Value},
+    Datastore, Response as SurrealResponse, Session,
 };
+use go_urls::surrealutils::{create_link, into_surreal_object, into_iter_objects, DB};
 
 // TODO: Add one time setup, specifically setting unique constraint on key in link table
 #[tokio::main]
@@ -29,7 +30,7 @@ async fn main() {
         .route("/:redirect_url", get(redirect))
         .route("/new-link", post(new_link))
         .route("/links", get(list_links))
-        .with_state(db.clone());
+        .with_state(db);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 4545));
     tracing::debug!("listening on {}", addr);
@@ -40,7 +41,7 @@ async fn main() {
 }
 
 async fn index() -> impl IntoResponse {
-    Json(HelloWorld {
+    Json(StringResponse {
         message: "Hello, World!".to_string(),
     })
 }
@@ -51,7 +52,6 @@ async fn redirect(
 ) -> impl IntoResponse {
     if let Ok(link) = find_link_by_key(db.as_ref(), &redirect_url).await {
         let new_location = link.as_str();
-        tracing::debug!("Redirecting to {}", new_location);
 
         let location_header = HeaderValue::from_str(new_location).unwrap();
 
@@ -73,10 +73,8 @@ async fn new_link(State(db): State<Arc<DB>>, Json(new_link): Json<NewLink>) -> i
     let url = new_link.url;
 
     match create_link(db.as_ref(), &key, &url).await {
-        Ok(_) => Json(HelloWorld {
-            message: "Link created!".to_string(),
-        }),
-        Err(_) => Json(HelloWorld {
+        Ok(id) => Json(StringResponse { message: id }),
+        Err(_) => Json(StringResponse {
             message: "Link not created!".to_string(),
         }),
     }
@@ -100,18 +98,6 @@ async fn list_links(State(db): State<Arc<DB>>) -> impl IntoResponse {
     Json(links)
 }
 
-async fn create_link((ds, ses): &DB, key: &str, url: &str) -> Result<(), ()> {
-    let sql = "CREATE link CONTENT $data";
-    let data: BTreeMap<String, Value> =
-        [("key".into(), key.into()), ("url".into(), url.into())].into();
-
-    let vars: BTreeMap<String, Value> = [("data".into(), data.into())].into();
-
-    // TODO: Return id of created link
-    let _ = ds.execute(sql, ses, Some(vars), false).await.unwrap();
-    Ok(())
-}
-
 async fn find_link_by_key((ds, ses): &DB, key: &str) -> Result<String, ()> {
     let sql = "SELECT * FROM link WHERE key = $key";
     let vars: BTreeMap<String, Value> = [("key".into(), key.into())].into();
@@ -121,9 +107,7 @@ async fn find_link_by_key((ds, ses): &DB, key: &str) -> Result<String, ()> {
 
     if let Ok(object) = object_result {
         match object.get("url".into()) {
-            Some(Value::Strand(url)) => {
-                Ok(url.as_str().to_string())
-            }
+            Some(Value::Strand(url)) => Ok(url.as_str().to_string()),
             _ => Err(()),
         }
     } else {
@@ -131,38 +115,8 @@ async fn find_link_by_key((ds, ses): &DB, key: &str) -> Result<String, ()> {
     }
 }
 
-fn into_iter_objects(
-    ress: Vec<SurrealResponse>,
-) -> AnyhowResult<impl Iterator<Item = AnyhowResult<Object>>> {
-    let res = ress.into_iter().next().map(|rp| rp.result).transpose()?;
-
-    match res {
-        Some(Value::Array(arr)) => {
-            let it = arr.into_iter().map(|v| match v {
-                Value::Object(object) => Ok(object),
-                _ => Err(anyhow!("A record was not an Object")),
-            });
-            Ok(it)
-        }
-        _ => Err(anyhow!("No records found.")),
-    }
-}
-
-fn into_surreal_object(ress: Vec<SurrealResponse>) -> AnyhowResult<Object> {
-    let res = ress.into_iter().next().map(|rp| rp.result).transpose()?;
-
-    if let Some(Value::Array(object_arr)) = res {
-        match object_arr.into_iter().next() {
-            Some(Value::Object(object)) => Ok(object),
-            _ => Err(anyhow!("A record was not an Object")),
-        }
-    } else {
-        Err(anyhow!("No records found."))
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct HelloWorld {
+#[derive(Serialize)]
+struct StringResponse {
     message: String,
 }
 
@@ -171,5 +125,3 @@ struct NewLink {
     key: String,
     url: String,
 }
-
-type DB = (Datastore, Session);
