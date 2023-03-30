@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::{collections::BTreeMap, sync::Arc};
 use surrealdb::{
-    sql::{Object, Value},
-    Datastore, Response as SurrealResponse, Session,
+    sql::{Array, Object, Value},
+    Datastore, Error, Response as SurrealResponse, Session,
 };
 
 // TODO: Add one time setup, specifically setting unique constraint on key in link table
@@ -50,17 +50,22 @@ async fn redirect(
     State(db): State<Arc<DB>>,
 ) -> impl IntoResponse {
     if let Ok(link) = find_link_by_key(db.as_ref(), &redirect_url).await {
-        let new_location = link.get("url").unwrap();
-        tracing::debug!("Redirecting to {}", link);
+        let new_location = link.as_str();
+        tracing::debug!("Redirecting to {}", new_location);
+
+        let location_header = HeaderValue::from_str(new_location).unwrap();
+
+        Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header("Location", location_header)
+            .body(Body::empty())
+            .unwrap()
+    } else {
+        Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap()
     }
-
-    // let location_header = HeaderValue::from_str(new_location).unwrap();
-
-    // Response::builder()
-    //     .status(StatusCode::SEE_OTHER)
-    //     .header("Location", location_header)
-    //     .body(Body::empty())
-    //     .unwrap()
 }
 
 async fn new_link(State(db): State<Arc<DB>>, Json(new_link): Json<NewLink>) -> impl IntoResponse {
@@ -107,19 +112,20 @@ async fn create_link((ds, ses): &DB, key: &str, url: &str) -> Result<(), ()> {
     Ok(())
 }
 
-async fn find_link_by_key((ds, ses): &DB, key: &str) -> Result<Object, ()> {
+async fn find_link_by_key((ds, ses): &DB, key: &str) -> Result<String, ()> {
     let sql = "SELECT * FROM link WHERE key = $key";
     let vars: BTreeMap<String, Value> = [("key".into(), key.into())].into();
-    let vars2: BTreeMap<String, Value> = [("key".into(), key.into())].into();
 
-    let ress = ds.execute(sql, ses, Some(vars), false).await.unwrap();
-    let ress2 = ds.execute(sql, ses, Some(vars2), false).await.unwrap();
-    let somethign = into_surreal_object(ress);
-    let something2 = into_surreal_object2(ress2);
-    tracing::debug!("Found link 1: {:?}", &somethign);
-    if let Ok(res) = somethign {
-        tracing::debug!("Found link: {:?}", res);
-        Ok(res)
+    let vec_res = ds.execute(sql, ses, Some(vars), false).await.unwrap();
+    let object_result = into_surreal_object(vec_res);
+
+    if let Ok(object) = object_result {
+        match object.get("url".into()) {
+            Some(Value::Strand(url)) => {
+                Ok(url.as_str().to_string())
+            }
+            _ => Err(()),
+        }
     } else {
         Err(())
     }
@@ -144,21 +150,15 @@ fn into_iter_objects(
 
 fn into_surreal_object(ress: Vec<SurrealResponse>) -> AnyhowResult<Object> {
     let res = ress.into_iter().next().map(|rp| rp.result).transpose()?;
-    // let res_iter = into_iter_objects(ress)?;
-    // tracing::debug!("Found link 2: {:?}", res_iter.count());
-    match res {
-        Some(Value::Object(object)) => Ok(object),
-        _ => Err(anyhow!("No records found.")),
+
+    if let Some(Value::Array(object_arr)) = res {
+        match object_arr.into_iter().next() {
+            Some(Value::Object(object)) => Ok(object),
+            _ => Err(anyhow!("A record was not an Object")),
+        }
+    } else {
+        Err(anyhow!("No records found."))
     }
-}
-
-fn into_surreal_object2(ress: Vec<SurrealResponse>) -> AnyhowResult<Object> {
-    let res_iter = into_iter_objects(ress).unwrap();
-
-    res_iter.for_each(|obj_res| {
-        return obj_res;
-    });
-    
 }
 
 #[derive(Serialize, Deserialize)]
