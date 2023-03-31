@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Result as AnyhowResult};
 use axum::{
     body::Body,
     extract::{Path, State},
@@ -7,14 +6,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use go_urls::surrealutils::{create_link, find_link_by_key, into_iter_objects, DB};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::{collections::BTreeMap, sync::Arc};
-use surrealdb::{
-    sql::{Object, Value},
-    Datastore, Response as SurrealResponse, Session,
-};
-use go_urls::surrealutils::{create_link, into_surreal_object, into_iter_objects, DB};
+use surrealdb::{sql::Value, Datastore, Session};
 
 // TODO: Add one time setup, specifically setting unique constraint on key in link table
 #[tokio::main]
@@ -89,6 +85,7 @@ async fn list_links(State(db): State<Arc<DB>>) -> impl IntoResponse {
     if let Ok(res) = into_iter_objects(ress) {
         res.for_each(|obj| {
             let mut link: BTreeMap<String, Value> = BTreeMap::new();
+
             for (k, v) in obj.unwrap() {
                 link.insert(k, v);
             }
@@ -96,23 +93,6 @@ async fn list_links(State(db): State<Arc<DB>>) -> impl IntoResponse {
         });
     }
     Json(links)
-}
-
-async fn find_link_by_key((ds, ses): &DB, key: &str) -> Result<String, ()> {
-    let sql = "SELECT * FROM link WHERE key = $key";
-    let vars: BTreeMap<String, Value> = [("key".into(), key.into())].into();
-
-    let vec_res = ds.execute(sql, ses, Some(vars), false).await.unwrap();
-    let object_result = into_surreal_object(vec_res);
-
-    if let Ok(object) = object_result {
-        match object.get("url".into()) {
-            Some(Value::Strand(url)) => Ok(url.as_str().to_string()),
-            _ => Err(()),
-        }
-    } else {
-        Err(())
-    }
 }
 
 #[derive(Serialize)]
